@@ -1,0 +1,63 @@
+name: 'update deployment freeze'
+description: 'A deployment_freeze_status tag is defined on AWS resource,  '
+inputs:
+  service:
+    description: >
+      The name of the service defined in ecs cluster
+    required: true
+  cluster:
+    description: >
+      The name of the ecs cluster, inside which the service is defined
+    required: true
+  config-path:
+    description: >-
+      path to the config file in json format
+    required: false
+  isec2:
+    description: >-
+      boolean variable to indicte if the instance is an ecs or ec2
+    default: false
+    required: false
+  status:
+    description: >-
+      new status to be applied
+    required: false
+
+runs:
+  using: "composite"
+  steps:
+    - uses: actions/checkout@main
+    - name: load variables
+      id: load-vars
+      uses: myriad-actions/load-variables@main
+      with:
+        config-path: ${{ inputs.config-path }}
+    - name: configure AWS credentials 
+      uses: aws-actions/configure-aws-credentials@master
+      with:
+        role-to-assume: ${{ fromJson(steps.load-vars.outputs.vars).role-to-assume }}
+        aws-region: ${{ fromJson(steps.load-vars.outputs.vars).aws-region }}
+    - name: update ecs tag 
+      if: "${{ inputs.isec2 == 'false' }}"
+      run: |        
+        aws ecs tag-resource --resource-arn \
+        $(aws ecs describe-services --cluster ${{ inputs.cluster }}  --services ${{ inputs.service }} \
+        --query 'services[].serviceArn' | jq  -r ".[]") \
+        --tags key=deployment-freeze-status,value=${{ inputs.status }}
+      shell: bash
+    - name: set ec2 env 
+      if: "${{ inputs.isec2 != 'false' }}"
+      run: |
+        echo "ENV=$(echo ${{ inputs.cluster }} | awk -F- '{print $2}')" >> $GITHUB_ENV
+        echo "REGION=${{ fromJson(steps.load-vars.outputs.vars).aws-region }}" >> $GITHUB_ENV
+      shell: bash
+    - name: set resource
+      if: "${{ inputs.isec2 != 'false' }}"
+      run: |
+        echo RESOURCE=$(aws ec2 describe-instances --region ${{ env.REGION }} --filters "Name=tag:Environment,Values=${{ env.ENV }}" "Name=tag:role,Values=${{ fromJson(steps.load-vars.outputs.vars).role }}" "Name=instance-state-name,Values=running" --query 'Reservations[*].Instances[*].InstanceId' | jq -r ".[] | .[]" )  >> $GITHUB_ENV
+      shell: bash
+    - name: update ec2 tag 
+      if: "${{ inputs.isec2 != 'false' }}"
+      run: |
+        aws ec2 create-tags --region ${{ env.REGION }} --resources ${{ env.RESOURCE }} --tags Key=deployment-freeze-status,Value=${{ inputs.status }}
+      shell: bash
